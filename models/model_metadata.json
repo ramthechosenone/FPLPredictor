@@ -1,0 +1,61 @@
+{
+  "model_name": "Random Forest",
+  "feature_columns": [
+    "pts_roll3",
+    "pts_roll5",
+    "min_roll3",
+    "min_roll5",
+    "goals_roll3",
+    "goals_roll5",
+    "ast_roll3",
+    "ast_roll5",
+    "bonus_roll3",
+    "bonus_roll5",
+    "bps_roll3",
+    "bps_roll5",
+    "xg_roll3",
+    "xg_roll5",
+    "xa_roll3",
+    "xa_roll5",
+    "xgi_roll3",
+    "xgi_roll5",
+    "xgc_roll3",
+    "xgc_roll5",
+    "cs_roll3",
+    "cs_roll5",
+    "infl_roll3",
+    "infl_roll5",
+    "crea_roll3",
+    "crea_roll5",
+    "thrt_roll3",
+    "thrt_roll5",
+    "ict_roll3",
+    "ict_roll5",
+    "pts_season_avg",
+    "min_season_avg",
+    "xg_season_avg",
+    "xa_season_avg",
+    "bonus_season_avg",
+    "was_home",
+    "fdr",
+    "price",
+    "price_change_1gw",
+    "price_change_3gw",
+    "rest_days",
+    "games_played",
+    "element_type"
+  ],
+  "train_gw_range": [
+    4,
+    22
+  ],
+  "test_gw_range": [
+    23,
+    29
+  ],
+  "metrics": {
+    "MAE": 1.0034833149849867,
+    "RMSE": 1.904607095724355,
+    "R\u00b2": 0.31443845177741014
+  }
+}

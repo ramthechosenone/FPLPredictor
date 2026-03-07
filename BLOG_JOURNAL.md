@@ -128,3 +128,109 @@ A running log of decisions, discoveries, and learnings as we build an FPL points
 - A feature with low correlation (like FDR at 0.02) can still be valuable in a model through interactions with other features
 - Features with high correlation to each other (multicollinearity) may share credit in a model — the model sorts this out
 - The actual prediction formula/weights come from training a model, which is the next step
+
+---
+
+## Chapter 5: Model Selection — Training and Results
+
+### What is a model, really?
+
+A model is a **formula that learns patterns from data**. You show it thousands of examples ("this player had these stats and scored X points"), and it figures out the relationship between the inputs (features) and the output (points). This process is called **training**.
+
+Once trained, you give it a player's current stats and it outputs a prediction: "I think this player will score ~4.2 points next gameweek."
+
+### The type of learning: Supervised Learning
+
+This is **supervised learning** — we have both the inputs (43 features like rolling xG, minutes, price) AND the correct answer (actual points scored). The model learns by comparing its predictions to the real answers and adjusting itself to minimize the error.
+
+It's called "supervised" because we're essentially giving the model an answer key to learn from. The opposite would be *unsupervised learning*, where you have data but no correct answers (e.g., grouping players into clusters without knowing what the "right" groups are).
+
+### The three models we compared
+
+#### 1. Linear Regression — "Draw the best straight line"
+
+The simplest model. It assumes each feature contributes to points in a straight-line (linear) way:
+
+```
+predicted_points = intercept + (weight1 x feature1) + (weight2 x feature2) + ...
+```
+
+For example, it might learn: `predicted_points = -0.5 + (0.03 x min_roll3) + (0.2 x xg_roll3) + ...`
+
+**How it trains:** It finds the set of weights that minimizes the total squared error across all training examples. There's actually a mathematical formula for this — no iteration needed.
+
+**Strengths:** Fast, interpretable (you can see exactly how each feature contributes), hard to overfit.
+
+**Weaknesses:** Assumes relationships are linear. If "playing 45 minutes" is worth 1 point but "playing 90 minutes" is worth 3 points (not 2), linear regression can't capture that curve.
+
+#### 2. Random Forest — "Ask 200 decision trees and take the average"
+
+A decision tree is like a flowchart:
+```
+Is min_roll3 > 60?
+  YES → Is xg_roll3 > 0.3?
+    YES → predict 4.5 pts
+    NO  → predict 2.1 pts
+  NO  → predict 0.3 pts
+```
+
+A single tree is fragile — it might memorize quirks in the training data. A **Random Forest** fixes this by building 200 trees, each trained on a random subset of the data and features, then averaging their predictions. The randomness + averaging cancels out individual tree mistakes.
+
+**How it trains:** For each of the 200 trees, it randomly samples rows and features, then finds the best "split points" (like min_roll3 > 60) that separate high-scoring from low-scoring players.
+
+**Strengths:** Captures non-linear relationships and feature interactions automatically. Resistant to overfitting because of the averaging.
+
+**Weaknesses:** Less interpretable than linear regression (200 trees are hard to read). Can't extrapolate beyond the range of training data.
+
+#### 3. XGBoost — "Build trees that fix each other's mistakes"
+
+XGBoost (eXtreme Gradient Boosting) also uses decision trees, but instead of building them independently (like Random Forest), it builds them **sequentially**. Each new tree focuses specifically on the examples the previous trees got wrong.
+
+Think of it like this:
+- Tree 1 makes predictions. Some are wrong.
+- Tree 2 is trained specifically on Tree 1's errors.
+- Tree 3 is trained on the remaining errors after Trees 1+2.
+- ...and so on for 300 trees.
+
+The final prediction is the sum of all trees' contributions.
+
+**How it trains:** Uses gradient descent (a mathematical optimization technique) to figure out what each new tree should focus on. The "gradient" tells the algorithm which direction to adjust.
+
+**Strengths:** Usually the most accurate model for tabular data. Handles missing values, feature interactions, and non-linear relationships well.
+
+**Weaknesses:** More hyperparameters to tune (learning rate, tree depth, etc.). Can overfit if not carefully configured. Least interpretable of the three.
+
+### What we found
+
+| Model | MAE | RMSE | R² |
+|-------|-----|------|----|
+| Linear Regression | 1.026 | 1.895 | 0.321 |
+| **Random Forest** | **1.003** | 1.905 | 0.314 |
+| XGBoost | 1.033 | 1.943 | 0.286 |
+
+**What the metrics mean:**
+- **MAE (Mean Absolute Error):** On average, the prediction is off by ~1 point. If the model says "4 points," the actual is typically between 3-5.
+- **RMSE (Root Mean Squared Error):** Like MAE but penalizes big misses more. An RMSE of 1.9 means occasional big errors (predicting 3 when a player scores 15).
+- **R² (R-squared):** The model explains 31% of the variance in points. The other 69% is randomness — goals, assists, and bonus points are inherently unpredictable.
+
+### Why Random Forest won (barely)
+
+All three models performed almost identically. This tells us something important: **the bottleneck isn't the model, it's the data**. FPL points have a massive random component — a deflected goal, a last-minute penalty, a VAR decision — that no model can predict from historical stats.
+
+### Feature importance — what the model actually learned
+
+`min_roll3` (3-GW rolling average minutes) accounts for **62%** of the model's importance. The model's primary strategy is:
+
+1. "Will this player play?" (minutes rolling avg)
+2. If yes, "How good has he been recently?" (points, xG, BPS rolling averages)
+3. Minor adjustments for price, fixture difficulty, and position
+
+### Where the model fails
+
+- **Explosive hauls** (15+ points): Palmer scoring 20 points in a gameweek is essentially a random event from the model's perspective
+- **Red cards and own goals**: These cause negative scores that can't be predicted from form data
+- **GW23 was a disaster**: 0/15 predicted top players appeared in the actual top 30 — some gameweeks are just chaotic
+
+### The honest takeaway for the blog
+
+A 31% R² is actually reasonable for FPL prediction. Academic papers on football prediction typically achieve 25-35% for individual player performance. The model is useful for identifying **likely starters who are in good form** (the bread-and-butter 2-6 point returns) but can't predict the difference between a 5-point and a 15-point week.
