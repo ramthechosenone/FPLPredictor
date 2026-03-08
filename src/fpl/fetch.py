@@ -241,3 +241,42 @@ def main():
 if __name__ == "__main__":
     main()
 
+
+
+def fetch_vaastav_data(seasons=None, data_dir=None):
+    """
+    Download per-GW merged CSV data from the vaastav/Fantasy-Premier-League
+    GitHub repository for historical seasons.
+
+    Saves to data/external/vaastav/{season}/merged_gw.csv
+
+    Args:
+        seasons: List of season strings (e.g. ["2024-25", "2023-24"]).
+                 Defaults to last two seasons.
+        data_dir: Base data directory. If None, uses project_root/data/
+    """
+    if seasons is None:
+        seasons = ["2024-25", "2023-24"]
+    if data_dir is None:
+        data_dir = get_project_root() / "data"
+
+    base_url = "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data"
+
+    for season in seasons:
+        out_dir = data_dir / "external" / "vaastav" / season
+        out_file = out_dir / "merged_gw.csv"
+        if out_file.exists():
+            logger.info(f"Vaastav {season} already cached at {out_file}")
+            continue
+
+        url = f"{base_url}/{season}/gws/merged_gw.csv"
+        logger.info(f"Fetching vaastav data for {season} from {url}")
+        try:
+            response = requests.get(url, timeout=60)
+            response.raise_for_status()
+            ensure_directory_exists(out_dir)
+            out_file.write_text(response.text, encoding="utf-8")
+            logger.info(f"Saved vaastav {season} data to {out_file}")
+        except requests.RequestException as e:
+            logger.warning(f"Failed to fetch vaastav data for {season}: {e}")
+            continue

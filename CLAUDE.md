@@ -28,14 +28,33 @@ jupyter notebook notebooks/
 
 # Export a notebook to HTML
 jupyter nbconvert --to html --execute notebooks/<notebook>.ipynb --output-dir exports/
+
+# Run the API server locally
+uvicorn src.fpl.api:app --reload --port 8080
+
+# Docker: build and run
+docker build -t fpl-predictor .
+docker run -p 8080:8080 fpl-predictor
+
+# Deploy to GCP Cloud Run
+gcloud builds submit --tag gcr.io/YOUR_PROJECT_ID/fpl-predictor
+gcloud run deploy fpl-predictor \
+  --image gcr.io/YOUR_PROJECT_ID/fpl-predictor \
+  --platform managed --region us-central1 \
+  --allow-unauthenticated --memory 512Mi --cpu 1
 ```
 
 ## Architecture
 
-- **`src/fpl/fetch.py`** — Data fetching module. Pulls from `https://fantasy.premierleague.com/api` endpoints (`bootstrap-static` for players/teams/gameweeks, `fixtures` for match data, `element-summary/{id}` for per-player gameweek history). Saves JSON to `data/raw/`. Entry point: `main()` or `fetch_all_data()`.
-- **`data/raw/`** — Cached JSON responses (`bootstrap_static.json`, `fixtures.json`, `player_histories/`). These must exist before running notebooks; generate them with the fetch module.
+- **`src/fpl/fetch.py`** — Data fetching module. Pulls from `https://fantasy.premierleague.com/api` endpoints (`bootstrap-static`, `fixtures`, `element-summary/{id}`). Saves JSON to `data/raw/`.
+- **`src/fpl/predict.py`** — Prediction pipeline. Loads the trained model, builds features from raw data, generates per-player predicted points.
+- **`src/fpl/api.py`** — FastAPI server. Endpoints: `/health`, `/predict?player_id=`, `/predict/top?n=`, `/predict/position/{pos}`.
+- **`data/raw/`** — Cached JSON responses (`bootstrap_static.json`, `fixtures.json`, `player_histories/`).
+- **`models/`** — Trained model (`best_model.joblib`) and metadata (`model_metadata.json`).
 - **`notebooks/`** — Exploratory analysis notebooks. Each maps to a blog chapter.
 - **`exports/`** — HTML exports of notebooks for browser viewing.
+- **`Dockerfile`** — Containerizes the API for deployment. Uses `python:3.13-slim`, exposes port 8080.
+- **`.dockerignore`** — Excludes `venv/`, notebooks, caches from the Docker image.
 
 ## Key Conventions
 
@@ -43,3 +62,4 @@ jupyter nbconvert --to html --execute notebooks/<notebook>.ipynb --output-dir ex
 - Notebooks expect to be run from `notebooks/` directory — they reference `Path.cwd().parent` as project root
 - Raw data files are committed to the repo (not gitignored)
 - Player history fetcher skips already-cached files and rate-limits at ~3 req/sec
+- API runs on port 8080 (Cloud Run default)

@@ -1,5 +1,7 @@
 {
-  "model_name": "Random Forest",
+  "model_name": "XGBoost",
+  "version": "v3",
+  "improvement": "Enhanced features: defensive actions, team strength, H2H, transfer momentum, prev season baseline",
   "feature_columns": [
     "pts_roll3",
     "pts_roll5",
@@ -43,7 +45,32 @@
     "price_change_3gw",
     "rest_days",
     "games_played",
-    "element_type"
+    "element_type",
+    "starts_roll3",
+    "starts_roll5",
+    "tackles_roll3",
+    "tackles_roll5",
+    "recov_roll3",
+    "recov_roll5",
+    "yc_roll3",
+    "yc_roll5",
+    "saves_roll3",
+    "saves_roll5",
+    "starts_season_avg",
+    "def_actions_roll3",
+    "def_actions_roll5",
+    "transfers_balance_roll3",
+    "log_selected",
+    "h2h_avg_pts",
+    "h2h_avg_xg",
+    "h2h_games",
+    "h2h_prev_season_avg_pts",
+    "h2h_prev_season_games",
+    "prev_season_pts_per90",
+    "prev_season_xg_per90",
+    "prev_season_minutes",
+    "team_goals_for_roll5",
+    "team_goals_against_roll5"
   ],
   "train_gw_range": [
     4,
@@ -54,8 +81,8 @@
     29
   ],
   "metrics": {
-    "MAE": 1.0034833149849867,
-    "RMSE": 1.904607095724355,
-    "R\u00b2": 0.31443845177741014
+    "MAE": 2.173,
+    "RMSE": 2.848,
+    "R\u00b2": 0.0596
   }
 }

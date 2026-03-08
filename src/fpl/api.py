@@ -7,6 +7,7 @@ FastAPI server that serves predictions from the trained model.
 from pathlib import Path
 
 from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .predict import load_model, predict_next_gw
@@ -15,6 +16,13 @@ app = FastAPI(
     title="FPL Predictor API",
     description="Predict Fantasy Premier League player points using ML",
     version="1.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
 )
 
 # Load model once at startup
@@ -56,12 +64,13 @@ def predict_player(player_id: int = Query(..., description="Player element ID"))
         "team": row["team_name"],
         "price": float(row["price"]),
         "predicted_points": float(row["predicted_points"]),
+        "photo_url": f"https://resources.premierleague.com/premierleague/photos/players/110x140/p{int(row['code'])}.png",
         "based_on_gw": int(row["round"]),
     }
 
 
 @app.get("/predict/top")
-def predict_top(n: int = Query(15, ge=1, le=100, description="Number of top players")):
+def predict_top(n: int = Query(15, ge=1, le=500, description="Number of top players")):
     """Get top N predicted players for next GW."""
     df = get_predictions().head(n)
     return {
@@ -75,6 +84,7 @@ def predict_top(n: int = Query(15, ge=1, le=100, description="Number of top play
                 "team": row["team_name"],
                 "price": float(row["price"]),
                 "predicted_points": float(row["predicted_points"]),
+                "photo_url": f"https://resources.premierleague.com/premierleague/photos/players/110x140/p{int(row['code'])}.png",
             }
             for i, row in df.iterrows()
         ],
@@ -103,9 +113,11 @@ def predict_by_position(
                 "rank": i + 1,
                 "player_id": int(row["player_id"]),
                 "name": row["web_name"],
+                "position": row["position"],
                 "team": row["team_name"],
                 "price": float(row["price"]),
                 "predicted_points": float(row["predicted_points"]),
+                "photo_url": f"https://resources.premierleague.com/premierleague/photos/players/110x140/p{int(row['code'])}.png",
             }
             for i, row in pos_df.iterrows()
         ],
