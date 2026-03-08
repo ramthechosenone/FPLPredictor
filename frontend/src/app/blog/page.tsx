@@ -4,7 +4,8 @@ import BlogContent from "../../components/BlogContent";
 
 export const metadata = {
   title: "FPL Predictor — Build Journal",
-  description: "A running log of decisions, discoveries, and learnings building an FPL points predictor from scratch.",
+  description:
+    "A running log of decisions, discoveries, and learnings building an FPL points predictor from scratch.",
 };
 
 export default function BlogPage() {
@@ -19,7 +20,10 @@ export default function BlogPage() {
   return (
     <div className="max-w-3xl mx-auto px-4">
       <header className="text-center py-8">
-        <a href="/" className="text-sm text-[var(--color-text-muted)] hover:text-[var(--color-accent-maroon)] transition-colors">
+        <a
+          href="/fpl"
+          className="text-sm text-[var(--color-text-muted)] hover:text-[var(--color-accent-maroon)] transition-colors"
+        >
           &larr; Back to Predictions
         </a>
         <h1 className="font-[family-name:var(--font-playfair)] text-4xl md:text-5xl font-bold text-[var(--color-accent-maroon)] tracking-tight mt-4">

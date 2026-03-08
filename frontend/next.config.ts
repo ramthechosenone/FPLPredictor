@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "export",
+  basePath: "/fpl",
   // Rewrites only work in dev mode (ignored for static export)
   async rewrites() {
     return [
