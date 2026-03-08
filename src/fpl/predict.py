@@ -1,8 +1,8 @@
 """
-FPL Prediction Pipeline
+FPL Prediction Pipeline v4
 
 Loads the trained model and generates predictions for players
-based on their recent gameweek history.
+based on their recent gameweek history with next-GW fixture awareness.
 """
 
 import json
@@ -31,7 +31,7 @@ def load_model(models_dir: Path = None):
 
 
 # ---------------------------------------------------------------------------
-# Feature-building helpers
+# Feature-building helpers (v3 base)
 # ---------------------------------------------------------------------------
 
 def _compute_rolling_features(gw_df: pd.DataFrame):
@@ -43,7 +43,6 @@ def _compute_rolling_features(gw_df: pd.DataFrame):
         "expected_goal_involvements": "xgi", "expected_goals_conceded": "xgc",
         "clean_sheets": "cs", "influence": "infl", "creativity": "crea",
         "threat": "thrt", "ict_index": "ict",
-        # Phase 1a: new rolling cols from unused FPL data
         "starts": "starts",
         "tackles": "tackles",
         "recoveries": "recov",
@@ -78,7 +77,7 @@ def _compute_season_averages(gw_df, rolling_cols):
 
 
 def _compute_defensive_actions(gw_df):
-    """Phase 1b: Composite defensive actions feature."""
+    """Composite defensive actions feature."""
     gw_df["def_actions"] = (
         gw_df["tackles"] + gw_df["recoveries"]
         + gw_df["clearances_blocks_interceptions"]
@@ -93,7 +92,7 @@ def _compute_defensive_actions(gw_df):
 
 
 def _compute_team_strength(gw_df):
-    """Phase 1c: Team goals for/against from match scores."""
+    """Team goals for/against from match scores."""
     gw_df["team_goals_for"] = np.where(
         gw_df["was_home"], gw_df["team_h_score"], gw_df["team_a_score"]
     )
@@ -110,7 +109,7 @@ def _compute_team_strength(gw_df):
 
 
 def _compute_h2h_features(gw_df):
-    """Phase 1d: Head-to-head features (player vs specific opponent)."""
+    """Head-to-head features (player vs specific opponent)."""
     gw_df = gw_df.sort_values(["player_id", "round"]).reset_index(drop=True)
     h2h_pts = []
     h2h_xg = []
@@ -139,18 +138,17 @@ def _compute_h2h_features(gw_df):
 
 
 def _compute_transfer_momentum(gw_df):
-    """Phase 1e: Transfer balance rolling mean and ownership signal."""
+    """Transfer balance rolling mean."""
     shifted = gw_df.groupby("player_id")["transfers_balance"].shift(1)
     gw_df["transfers_balance_roll3"] = (
         shifted.groupby(gw_df["player_id"])
         .transform(lambda x: x.rolling(3, min_periods=1).mean())
     )
-    gw_df["log_selected"] = np.log1p(gw_df["selected"])
     return gw_df
 
 
 def _compute_prev_season_features(data_dir):
-    """Phase 1f: Previous season baseline from history_past."""
+    """Previous season baseline from history_past."""
     histories_dir = data_dir / "player_histories"
     rows = []
     for hist_file in histories_dir.glob("*.json"):
@@ -180,11 +178,7 @@ def _compute_prev_season_features(data_dir):
 
 
 def _compute_vaastav_h2h(gw_df, data_dir):
-    """Phase 2b: Multi-season H2H from vaastav historical data.
-    
-    Vaastav CSVs have 'name' (web_name) and 'opponent_team' columns.
-    We match to current player_id via web_name from bootstrap.
-    """
+    """Multi-season H2H from vaastav historical data."""
     ext_dir = data_dir.parent / "external" / "vaastav"
     if not ext_dir.exists():
         return gw_df
@@ -194,7 +188,6 @@ def _compute_vaastav_h2h(gw_df, data_dir):
         return gw_df
     with open(bootstrap_path) as f:
         bootstrap = json.load(f)
-    # Map web_name -> player_id (current season)
     name_to_pid = {p["web_name"]: p["id"] for p in bootstrap["elements"]}
 
     past_rows = []
@@ -208,7 +201,6 @@ def _compute_vaastav_h2h(gw_df, data_dir):
             continue
         if "name" not in df.columns:
             continue
-        # Match by name — imperfect but covers most players
         df["player_id"] = df["name"].map(name_to_pid)
         df = df.dropna(subset=["player_id"])
         df["player_id"] = df["player_id"].astype(int)
@@ -229,7 +221,7 @@ def _compute_vaastav_h2h(gw_df, data_dir):
 
 
 def _compute_trajectory_features(gw_df):
-    """Phase 2c: Season-over-season improvement trajectories."""
+    """Season-over-season improvement trajectories."""
     if "prev_season_xg_per90" not in gw_df.columns:
         return gw_df
 
@@ -249,7 +241,7 @@ def _compute_trajectory_features(gw_df):
 
 
 def _compute_fbref_features(gw_df, data_dir):
-    """Phase 3: FBref advanced stats (graceful degradation if not available)."""
+    """FBref advanced stats (graceful degradation if not available)."""
     fbref_dir = data_dir.parent / "external" / "fbref"
     if not fbref_dir.exists():
         return gw_df
@@ -290,6 +282,153 @@ def _compute_fbref_features(gw_df, data_dir):
 
 
 # ---------------------------------------------------------------------------
+# v4 NEW helpers: Opponent strength, EMA, Last-1, Form acceleration
+# ---------------------------------------------------------------------------
+
+def _get_team_strengths(data_dir: Path) -> Dict[int, Dict]:
+    """Load team strength ratings from bootstrap data."""
+    with open(data_dir / "bootstrap_static.json") as f:
+        bootstrap = json.load(f)
+    strengths = {}
+    for t in bootstrap["teams"]:
+        strengths[t["id"]] = {
+            "attack_home": t["strength_attack_home"],
+            "attack_away": t["strength_attack_away"],
+            "defence_home": t["strength_defence_home"],
+            "defence_away": t["strength_defence_away"],
+        }
+    return strengths
+
+
+def _get_next_gw_number(data_dir: Path) -> int:
+    """Return the GW number with is_next=True."""
+    with open(data_dir / "bootstrap_static.json") as f:
+        bootstrap = json.load(f)
+    for e in bootstrap["events"]:
+        if e.get("is_next"):
+            return e["id"]
+    finished = [e["id"] for e in bootstrap["events"] if e.get("finished")]
+    return max(finished) + 1 if finished else 1
+
+
+def _get_next_gw_fixtures(data_dir: Path, next_gw: int, team_strengths: Dict) -> Dict:
+    """Build per-team fixture info for the next GW.
+
+    Returns {team_id: {fdr, is_home, opp_attack, opp_defence, opp_team}}.
+    """
+    with open(data_dir / "fixtures.json") as f:
+        fixtures = json.load(f)
+
+    league_mean = 1200
+    result = {}
+    for fix in fixtures:
+        if fix.get("event") != next_gw:
+            continue
+
+        th, ta = fix["team_h"], fix["team_a"]
+        opp_a = team_strengths.get(ta, {})
+        opp_h = team_strengths.get(th, {})
+
+        # Home team faces away opponent
+        result[th] = {
+            "fdr": fix.get("team_h_difficulty", 3),
+            "is_home": 1,
+            "opp_attack": opp_a.get("attack_away", league_mean) - league_mean,
+            "opp_defence": opp_a.get("defence_away", league_mean) - league_mean,
+            "opp_team": ta,
+        }
+        # Away team faces home opponent
+        result[ta] = {
+            "fdr": fix.get("team_a_difficulty", 3),
+            "is_home": 0,
+            "opp_attack": opp_h.get("attack_home", league_mean) - league_mean,
+            "opp_defence": opp_h.get("defence_home", league_mean) - league_mean,
+            "opp_team": th,
+        }
+    return result
+
+
+def _compute_opponent_strength(gw_df: pd.DataFrame, data_dir: Path):
+    """v4 Phase 1: Add opponent strength features for training rows.
+
+    For each row we know opponent_team and was_home. We look up the
+    opponent's contextual strength ratings.
+    """
+    team_strengths = _get_team_strengths(data_dir)
+    league_mean = 1200
+
+    # Vectorized approach using map
+    opp_att_home = gw_df["opponent_team"].map(lambda t: team_strengths.get(t, {}).get("attack_home", league_mean))
+    opp_att_away = gw_df["opponent_team"].map(lambda t: team_strengths.get(t, {}).get("attack_away", league_mean))
+    opp_def_home = gw_df["opponent_team"].map(lambda t: team_strengths.get(t, {}).get("defence_home", league_mean))
+    opp_def_away = gw_df["opponent_team"].map(lambda t: team_strengths.get(t, {}).get("defence_away", league_mean))
+
+    is_home = gw_df["was_home"].astype(bool)
+    # If player is home, opponent plays away; if player is away, opponent plays at home
+    gw_df["next_opp_attack"] = np.where(is_home, opp_att_away, opp_att_home) - league_mean
+    gw_df["next_opp_defence"] = np.where(is_home, opp_def_away, opp_def_home) - league_mean
+    gw_df["next_fdr"] = gw_df["fdr"]
+    gw_df["is_home_next"] = gw_df["was_home"].astype(int)
+    gw_df["opp_strength_diff"] = gw_df["next_opp_attack"] - gw_df["next_opp_defence"]
+
+    # Player's own team strength
+    own_att_home = gw_df["team"].map(lambda t: team_strengths.get(t, {}).get("attack_home", league_mean))
+    own_att_away = gw_df["team"].map(lambda t: team_strengths.get(t, {}).get("attack_away", league_mean))
+    own_def_home = gw_df["team"].map(lambda t: team_strengths.get(t, {}).get("defence_home", league_mean))
+    own_def_away = gw_df["team"].map(lambda t: team_strengths.get(t, {}).get("defence_away", league_mean))
+
+    own_attack = np.where(is_home, own_att_home, own_att_away)
+    own_defence = np.where(is_home, own_def_home, own_def_away)
+    opp_attack_raw = np.where(is_home, opp_att_away, opp_att_home)
+    opp_defence_raw = np.where(is_home, opp_def_away, opp_def_home)
+
+    own_strength = (own_attack + own_defence) / 2
+    opp_strength = (opp_attack_raw + opp_defence_raw) / 2
+    gw_df["team_vs_opp"] = own_strength - opp_strength
+
+    return gw_df
+
+
+def _compute_ema_features(gw_df: pd.DataFrame):
+    """v4 Phase 2a: Exponential moving averages for recency weighting."""
+    ema_cols = {
+        "total_points": "pts", "expected_goals": "xg", "expected_assists": "xa",
+        "expected_goal_involvements": "xgi", "bonus": "bonus", "bps": "bps",
+        "ict_index": "ict",
+    }
+    for col, short in ema_cols.items():
+        shifted = gw_df.groupby("player_id")[col].shift(1)
+        for span in [3, 5]:
+            gw_df[f"{short}_ema{span}"] = (
+                shifted.groupby(gw_df["player_id"])
+                .transform(lambda x: x.ewm(span=span, min_periods=1).mean())
+            )
+    return gw_df
+
+
+def _compute_last1_features(gw_df: pd.DataFrame):
+    """v4 Phase 2b: Last single-GW raw features."""
+    last1_cols = {
+        "total_points": "pts", "expected_goals": "xg", "expected_assists": "xa",
+        "bonus": "bonus", "minutes": "min",
+    }
+    for col, short in last1_cols.items():
+        gw_df[f"{short}_last1"] = gw_df.groupby("player_id")[col].shift(1)
+    return gw_df
+
+
+def _compute_form_acceleration(gw_df: pd.DataFrame):
+    """v4 Phase 3: Form acceleration / trend features."""
+    gw_df["pts_accel_3v5"] = gw_df["pts_roll3"] - gw_df["pts_roll5"]
+    gw_df["xg_accel_3v5"] = gw_df["xg_roll3"] - gw_df["xg_roll5"]
+    gw_df["xgi_accel_3v5"] = gw_df["xgi_roll3"] - gw_df["xgi_roll5"]
+    gw_df["pts_vs_season"] = gw_df["pts_roll3"] - gw_df["pts_season_avg"]
+    gw_df["xg_vs_season"] = gw_df["xg_roll3"] - gw_df["xg_season_avg"]
+    gw_df["pts_spike"] = gw_df["pts_last1"] - gw_df["pts_roll5"]
+    return gw_df
+
+
+# ---------------------------------------------------------------------------
 # Main feature builder
 # ---------------------------------------------------------------------------
 
@@ -297,9 +436,8 @@ def build_features(data_dir=None):
     """
     Build the feature matrix from raw data.
 
-    Replicates the feature engineering from notebook 03,
-    producing the same columns the model was trained on,
-    plus enhanced features from Phases 1-3.
+    v4: Adds opponent strength, EMA, last-1, form acceleration features.
+    Removes log_selected (ownership bias).
     """
     if data_dir is None:
         data_dir = get_project_root() / "data" / "raw"
@@ -351,27 +489,15 @@ def build_features(data_dir=None):
     gw_df["kickoff_time"] = pd.to_datetime(gw_df["kickoff_time"])
     gw_df = gw_df.sort_values(["player_id", "round"]).reset_index(drop=True)
 
-    # Phase 1a: Rolling features
+    # --- v3 features ---
     gw_df, rolling_cols = _compute_rolling_features(gw_df)
-
-    # Phase 1a: Season averages
     gw_df = _compute_season_averages(gw_df, rolling_cols)
-
     gw_df["games_played"] = gw_df.groupby("player_id").cumcount()
-
-    # Phase 1b: Defensive actions
     gw_df = _compute_defensive_actions(gw_df)
-
-    # Phase 1c: Team strength
     gw_df = _compute_team_strength(gw_df)
-
-    # Phase 1d: Head-to-head
     gw_df = _compute_h2h_features(gw_df)
-
-    # Phase 1e: Transfer momentum
     gw_df = _compute_transfer_momentum(gw_df)
 
-    # Phase 1f: Previous season baseline
     prev_season_df = _compute_prev_season_features(data_dir)
     if not prev_season_df.empty:
         gw_df = gw_df.merge(prev_season_df, on="player_id", how="left")
@@ -398,14 +524,30 @@ def build_features(data_dir=None):
     gw_df["prev_kickoff"] = gw_df.groupby("player_id")["kickoff_time"].shift(1)
     gw_df["rest_days"] = (gw_df["kickoff_time"] - gw_df["prev_kickoff"]).dt.days
 
-    # Phase 2b: Multi-season H2H from vaastav
+    # Vaastav H2H
     gw_df = _compute_vaastav_h2h(gw_df, data_dir)
 
-    # Phase 2c: Season-over-season trajectory
+    # Trajectory
     gw_df = _compute_trajectory_features(gw_df)
 
-    # Phase 3: FBref advanced stats
+    # FBref
     gw_df = _compute_fbref_features(gw_df, data_dir)
+
+    # --- v4 NEW features ---
+    # Phase 1: Opponent strength
+    gw_df = _compute_opponent_strength(gw_df, data_dir)
+
+    # Phase 2a: EMA features
+    gw_df = _compute_ema_features(gw_df)
+
+    # Phase 2b: Last-1-GW features
+    gw_df = _compute_last1_features(gw_df)
+
+    # Phase 3: Form acceleration (must come after rolling + last1)
+    gw_df = _compute_form_acceleration(gw_df)
+
+    # Phase 4: pts_per_price (replaces log_selected)
+    gw_df["pts_per_price"] = gw_df["pts_roll3"] / gw_df["price"].replace(0, np.nan)
 
     gw_df["target"] = gw_df["total_points"]
 
@@ -413,7 +555,7 @@ def build_features(data_dir=None):
 
 
 def get_feature_columns():
-    """Return the full list of feature columns for the enhanced model (v3)."""
+    """Return the full list of feature columns for the v4 model (99 features)."""
     base_rolling = [
         "pts", "min", "goals", "ast", "bonus", "bps",
         "xg", "xa", "xgi", "xgc", "cs",
@@ -431,7 +573,7 @@ def get_feature_columns():
 
     h2h = ["h2h_avg_pts", "h2h_avg_xg", "h2h_games"]
 
-    transfer = ["transfers_balance_roll3", "log_selected"]
+    transfer = ["transfers_balance_roll3"]  # v4: removed log_selected
 
     prev_season = ["prev_season_pts_per90", "prev_season_xg_per90", "prev_season_minutes"]
 
@@ -442,27 +584,72 @@ def get_feature_columns():
     original_other = ["was_home", "fdr", "price", "price_change_1gw",
                       "price_change_3gw", "rest_days", "games_played", "element_type"]
 
+    # --- v4 NEW feature groups ---
+    opponent_strength = ["next_opp_attack", "next_opp_defence", "next_fdr",
+                         "is_home_next", "opp_strength_diff", "team_vs_opp"]
+
+    ema_features = [f"{s}_ema{span}"
+                    for s in ["pts", "xg", "xa", "xgi", "bonus", "bps", "ict"]
+                    for span in [3, 5]]
+
+    last1_features = ["pts_last1", "xg_last1", "xa_last1", "bonus_last1", "min_last1"]
+
+    form_acceleration = ["pts_accel_3v5", "xg_accel_3v5", "xgi_accel_3v5",
+                         "pts_vs_season", "xg_vs_season", "pts_spike"]
+
+    bias_correction = ["pts_per_price"]
+
     all_features = (rolling_features + season_features + defensive + team_strength
                     + h2h + transfer + prev_season + vaastav_h2h + trajectory
-                    + original_other)
+                    + original_other + opponent_strength + ema_features
+                    + last1_features + form_acceleration + bias_correction)
     return all_features
 
 
 def predict_next_gw(model=None, metadata=None, data_dir=None):
     """
-    Generate predictions for the latest gameweek's players.
+    Generate predictions for the next gameweek.
 
-    Returns a DataFrame with player info and predicted points,
-    sorted by predicted points descending.
+    v4: Injects forward-looking fixture data (opponent strength, FDR, home/away)
+    for the upcoming GW, replacing the last-played values.
     """
     if model is None or metadata is None:
         model, metadata = load_model()
+
+    if data_dir is None:
+        data_dir = get_project_root() / "data" / "raw"
 
     feature_cols = metadata["feature_columns"]
     gw_df = build_features(data_dir)
 
     latest = gw_df.groupby("player_id").tail(1).copy()
     latest = latest[latest["minutes"] > 0]
+
+    # --- v4: Inject NEXT GW fixture data ---
+    team_strengths = _get_team_strengths(data_dir)
+    next_gw = _get_next_gw_number(data_dir)
+    next_fixtures = _get_next_gw_fixtures(data_dir, next_gw, team_strengths)
+
+    # Overwrite opponent strength features with next-GW values
+    for idx, row in latest.iterrows():
+        team_id = row["team"]
+        fix_info = next_fixtures.get(team_id)
+        if fix_info:
+            latest.at[idx, "next_opp_attack"] = fix_info["opp_attack"]
+            latest.at[idx, "next_opp_defence"] = fix_info["opp_defence"]
+            latest.at[idx, "next_fdr"] = fix_info["fdr"]
+            latest.at[idx, "is_home_next"] = fix_info["is_home"]
+            latest.at[idx, "opp_strength_diff"] = fix_info["opp_attack"] - fix_info["opp_defence"]
+            # Recalculate team_vs_opp
+            own = team_strengths.get(team_id, {})
+            league_mean = 1200
+            if fix_info["is_home"]:
+                own_s = (own.get("attack_home", league_mean) + own.get("defence_home", league_mean)) / 2
+            else:
+                own_s = (own.get("attack_away", league_mean) + own.get("defence_away", league_mean)) / 2
+            opp_s = (fix_info["opp_attack"] + league_mean + fix_info["opp_defence"] + league_mean) / 2
+            latest.at[idx, "team_vs_opp"] = own_s - opp_s
+
     # Only require core features to be non-null; XGBoost handles NaN natively
     core_cols = [c for c in feature_cols if "h2h" not in c and "prev_season" not in c
                  and "improvement" not in c]

@@ -739,3 +739,157 @@ The top predicted players now look very reasonable: Virgil van Dijk (5.96), Rice
 - Hyperparameter tuning (Bayesian optimization on the curated feature set)
 - Per-position models (GK features differ fundamentally from FWD features)
 - Blog page on the frontend website
+
+---
+
+## Chapter 9: Next-GW Prediction Accuracy — Model v4
+
+*March 8, 2026*
+
+### The problem with v3
+
+The v3 model was a "tier list" — it ranked players by overall quality rather than predicting who would score highest *next gameweek*. The evidence was damning:
+
+- **Top 15 prediction range was only 1.1 points** (4.86 – 5.96). The model couldn't differentiate between players.
+- **Semenyo** (excellent current form) was buried at #15. Joao Pedro (hot streak) wasn't in the top 15 at all.
+- **Heavily biased toward premium defenders** — Virgil, Rice, Saka, Gabriel dominated regardless of fixture difficulty.
+- The model had no idea *who the player faces next*. A player facing Leicester at home got the same prediction as one facing Liverpool away.
+
+Five root causes:
+
+1. **No upcoming fixture info** — used last-played FDR, not the next opponent's strength
+2. **No recency weighting** — simple rolling averages weight all games equally
+3. **No form acceleration** — no features for "form is improving"
+4. **No single-GW signal** — shortest window was roll3, diluting standout performances
+5. **Ownership bias** — `log_selected` pushed popular players up regardless of form
+
+### The fix: 4 phases of new features
+
+**Phase 1 — Opponent Strength (6 features)**
+
+The FPL API already provides team strength ratings on a 1000-1400 scale (`strength_attack_home`, `strength_attack_away`, `strength_defence_home`, `strength_defence_away`). We just weren't using them.
+
+New features:
+- `next_opp_attack` / `next_opp_defence` — opponent's contextual strength (home vs away), centered around 0
+- `next_fdr` — fixture difficulty rating for the upcoming match
+- `is_home_next` — home advantage flag
+- `opp_strength_diff` — attack minus defence imbalance of opponent
+- `team_vs_opp` — player's team strength minus opponent strength
+
+The critical change in `predict_next_gw()`: at inference time, we **overwrite** these features with the *next* GW's fixture data rather than the last-played values. The model trains on historical opponent strength, then at prediction time receives forward-looking fixture info. No leakage — fixture schedules are public before the season starts.
+
+**Phase 2 — Recency-Weighted Features (19 features)**
+
+*2a. Exponential Moving Averages (14 features)*
+
+EMA with span=3 gives ~50% weight to the most recent game, vs equal weighting in rolling averages. Added EMA variants for: `pts`, `xg`, `xa`, `xgi`, `bonus`, `bps`, `ict` — each with span 3 and 5.
+
+*2b. Last-1-GW Raw Features (5 features)*
+
+The most recent single-GW performance as standalone features: `pts_last1`, `xg_last1`, `xa_last1`, `bonus_last1`, `min_last1`. A 15-point haul last week is now a direct signal, not diluted over 3-5 games.
+
+**Phase 3 — Form Acceleration (6 features)**
+
+These are derived features — just column arithmetic on existing rolling stats:
+
+- `pts_accel_3v5` = `pts_roll3 - pts_roll5` — is 3-game form above 5-game trend?
+- `xg_accel_3v5` / `xgi_accel_3v5` — same for expected stats
+- `pts_vs_season` = `pts_roll3 - pts_season_avg` — hot streak vs baseline
+- `xg_vs_season` — same for xG
+- `pts_spike` = `pts_last1 - pts_roll5` — single-GW breakout detection
+
+These explicitly capture "form is improving" — the exact signal needed for next-GW prediction.
+
+**Phase 4 — Bias Correction (1 removal, 1 addition)**
+
+- **Removed `log_selected`** — ownership is a popularity signal, not a performance predictor. It creates a feedback loop where already-popular players get boosted.
+- **Added `pts_per_price`** = `pts_roll3 / price` — captures "outperforming expectations for their price bracket."
+
+### Hyperparameter search
+
+Tested 81 combinations across:
+- `max_depth`: [3, 4, 5]
+- `learning_rate`: [0.01, 0.03, 0.05]
+- `n_estimators`: [300, 500, 800]
+- `colsample_bytree`: [0.6, 0.7, 0.8]
+
+Best: `max_depth=3, lr=0.01, n_estimators=500, colsample_bytree=0.7`
+
+Lower learning rate + more trees = better generalization with the expanded feature set. Depth stayed at 3 — the model doesn't need deeper trees, it needs better features.
+
+### Ablation study
+
+| Feature Group | R² without | Δ R² | Verdict |
+|--------------|-----------|-------|---------|
+| Full v4 model | 0.3484 | — | baseline |
+| w/o last1_features | 0.3381 | -0.0103 | **most impactful** |
+| w/o form_acceleration | 0.3468 | -0.0017 | contributes |
+| w/o opponent_strength | 0.3470 | -0.0014 | contributes |
+| w/o bias_correction | 0.3471 | -0.0013 | contributes |
+| w/o ema_features | 0.3478 | -0.0006 | marginal |
+
+Last-1-GW features had the biggest individual impact — the single most recent game is the strongest signal for next-GW performance. Every group contributed positively; none hurt the model.
+
+### Feature importance
+
+11 of the top 20 most important features are new v4 additions:
+
+`min_last1`, `pts_ema3`, `ict_ema3`, `bps_ema3`, `bps_ema5`, `next_fdr`, `ict_ema5`, `xgi_ema3`, `xgi_ema5`, `xg_ema3`, `team_vs_opp`
+
+The EMA features are dominating — the model strongly prefers recency-weighted stats over simple rolling averages.
+
+### Results
+
+| Metric | v3 | v4 | Change |
+|--------|-----|-----|--------|
+| R² | 0.0596 | **0.3484** | +484% |
+| MAE | 2.173 | **0.949** | -56% |
+| RMSE | 2.848 | **1.837** | -36% |
+| Features | 68 | 101 | +33 |
+
+### Prediction spot-check
+
+**v4 Top 10 predictions for GW30:**
+
+| # | Player | Pos | Team | Predicted |
+|---|--------|-----|------|-----------|
+| 1 | Semenyo | MID | Man City | 5.39 |
+| 2 | Thiago | FWD | Brentford | 4.98 |
+| 3 | Guéhi | DEF | Man City | 4.59 |
+| 4 | Saka | MID | Arsenal | 4.54 |
+| 5 | Virgil | DEF | Liverpool | 4.51 |
+| 6 | Bowen | FWD | West Ham | 4.37 |
+| 7 | Gabriel | DEF | Arsenal | 4.31 |
+| 8 | Palmer | MID | Chelsea | 4.27 |
+| 9 | M.Salah | MID | Liverpool | 4.25 |
+| 10 | Konaté | DEF | Liverpool | 4.24 |
+
+**Key wins:**
+- **Semenyo jumped from #15 to #1** — form acceleration features are working
+- **Better position diversity** — forwards now appear (Thiago #2, Bowen #6)
+- **Fixture-aware** — players facing weaker defenses are boosted appropriately
+- **Top-15 spread: 1.23 pts** (up from 1.1, with room to grow as model sees more diverse test data)
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/fpl/predict.py` | 6 new helper functions, 32 new features, forward-looking fixture injection |
+| `notebooks/07_next_gw_features.ipynb` | **New** — v4 training, hyperparameter search, ablation |
+| `models/best_model.joblib` | Updated to v4 |
+| `models/model_metadata.json` | 101 features, v4 metrics |
+
+### Lessons learned
+
+1. **The biggest prediction gain came from the simplest feature.** `pts_last1` (literally "what did the player score last week?") was the most impactful addition. Sometimes the obvious signal is the right one.
+2. **EMA > simple rolling averages.** Exponentially-weighted means give the model a natural recency bias without throwing away older data entirely.
+3. **Fixture context transforms the model's purpose.** Adding opponent strength + forward-looking fixture injection changed the model from a "tier list" to an actual next-GW predictor.
+4. **Removing a feature can improve results.** Dropping `log_selected` (ownership) removed a popularity bias that was masking form signals.
+5. **R² jumped from 0.06 to 0.35 — not by adding complexity, but by adding the right information.** The model had the same depth (3) and similar tree count. It just had better features to learn from.
+
+### What's next
+
+- Per-position models (GK features differ fundamentally from outfield players)
+- Ensemble with `ep_next` (FPL's own expected points) at inference time
+- Auto-refresh pipeline (weekly cron: fetch data → retrain → deploy)
+- Improve vaastav name matching for better multi-season H2H coverage
