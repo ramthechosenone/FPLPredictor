@@ -63,3 +63,11 @@ gcloud run deploy fpl-predictor \
 - Raw data files are committed to the repo (not gitignored)
 - Player history fetcher skips already-cached files and rate-limits at ~3 req/sec
 - API runs on port 8080 (Cloud Run default)
+
+## Blog Sync
+
+`BLOG_JOURNAL.md` is the source of truth for the build journal. A copy lives in the personal-site repo at `../Personal Website/app/fpl/blog/BLOG_JOURNAL.md`.
+
+- **Auto-sync**: A post-commit hook copies the file whenever a commit touches `BLOG_JOURNAL.md`
+- **Manual sync**: `./sync_blog.sh`
+- After syncing, the personal-site repo still needs its own commit + push to trigger Vercel deploy
