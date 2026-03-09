@@ -606,6 +606,68 @@ def get_feature_columns():
     return all_features
 
 
+def _generate_reason(row: pd.Series) -> str:
+    """Generate a human-readable reason explaining why a player scored high."""
+    reasons = []
+
+    # 1. Recent form spike
+    pts_last1 = row.get("pts_last1")
+    pts_roll5 = row.get("pts_roll5")
+    if pd.notna(pts_last1) and pd.notna(pts_roll5) and pts_roll5 > 0 and pts_last1 >= pts_roll5 * 1.5:
+        reasons.append(f"Scored {pts_last1:.0f} pts last GW, well above his recent average")
+
+    # 2. Form trend
+    accel = row.get("pts_accel_3v5")
+    if pd.notna(accel) and accel > 0.5:
+        reasons.append("Form is trending upward")
+
+    # 3. Fixture difficulty
+    fdr = row.get("next_fdr")
+    if pd.notna(fdr) and fdr <= 2:
+        reasons.append(f"Favorable fixture ahead (FDR {fdr:.0f})")
+
+    # 4. Home advantage
+    is_home = row.get("is_home_next")
+    if pd.notna(is_home) and is_home == 1:
+        reasons.append("Playing at home")
+
+    # 5. xG
+    xg = row.get("xg_roll3")
+    if pd.notna(xg) and xg > 0.4:
+        reasons.append(f"Strong expected goals ({xg:.2f} xG per game)")
+
+    # 6. Bonus magnet
+    bonus = row.get("bonus_roll3")
+    if pd.notna(bonus) and bonus >= 1.5:
+        reasons.append("Earning bonus points regularly")
+
+    # 7. Value
+    ppp = row.get("pts_per_price")
+    if pd.notna(ppp) and ppp > 0.8:
+        reasons.append("Excellent value for money")
+
+    # 8. H2H
+    h2h_games = row.get("h2h_games")
+    h2h_avg = row.get("h2h_avg_pts")
+    if pd.notna(h2h_games) and pd.notna(h2h_avg) and h2h_games >= 3 and h2h_avg > 5:
+        reasons.append("Historically scores well against this opponent")
+
+    # 9. Team strength
+    tvso = row.get("team_vs_opp")
+    if pd.notna(tvso) and tvso > 30:
+        reasons.append("His team is significantly stronger")
+
+    # Pick up to 3, or fallback
+    if not reasons:
+        pts_roll3 = row.get("pts_roll3")
+        if pd.notna(pts_roll3):
+            reasons.append(f"Averaging {pts_roll3:.1f} pts over last 3 games")
+        else:
+            reasons.append("Consistent performer based on recent data")
+
+    return ". ".join(reasons[:3]) + "."
+
+
 def predict_next_gw(model=None, metadata=None, data_dir=None):
     """
     Generate predictions for the next gameweek.
@@ -655,11 +717,14 @@ def predict_next_gw(model=None, metadata=None, data_dir=None):
                  and "improvement" not in c]
     latest = latest.dropna(subset=core_cols)
 
-    latest["predicted_points"] = model.predict(latest[feature_cols])
+    latest["score"] = model.predict(latest[feature_cols])
+    latest["reason"] = latest.apply(_generate_reason, axis=1)
 
     result = latest[["player_id", "code", "web_name", "position", "team_name", "price",
-                      "round", "predicted_points"]].copy()
-    result = result.sort_values("predicted_points", ascending=False).reset_index(drop=True)
-    result["predicted_points"] = result["predicted_points"].round(2)
+                      "round", "score", "reason"]].copy()
+    result = result.sort_values("score", ascending=False).reset_index(drop=True)
+    result["score"] = result["score"].round(2)
+    # Backwards compat alias -- remove after frontend deploys
+    result["predicted_points"] = result["score"]
 
     return result

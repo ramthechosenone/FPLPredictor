@@ -37,6 +37,10 @@ def get_predictions():
     return predictions_cache
 
 
+def _photo_url(code: int) -> str:
+    return f"https://resources.premierleague.com/premierleague/photos/players/110x140/p{code}.png"
+
+
 @app.get("/health")
 def health():
     return {
@@ -63,8 +67,10 @@ def predict_player(player_id: int = Query(..., description="Player element ID"))
         "position": row["position"],
         "team": row["team_name"],
         "price": float(row["price"]),
-        "predicted_points": float(row["predicted_points"]),
-        "photo_url": f"https://resources.premierleague.com/premierleague/photos/players/110x140/p{int(row['code'])}.png",
+        "score": float(row["score"]),
+        "predicted_points": float(row["score"]),
+        "reason": row["reason"],
+        "photo_url": _photo_url(int(row["code"])),
         "based_on_gw": int(row["round"]),
     }
 
@@ -83,8 +89,10 @@ def predict_top(n: int = Query(15, ge=1, le=500, description="Number of top play
                 "position": row["position"],
                 "team": row["team_name"],
                 "price": float(row["price"]),
-                "predicted_points": float(row["predicted_points"]),
-                "photo_url": f"https://resources.premierleague.com/premierleague/photos/players/110x140/p{int(row['code'])}.png",
+                "score": float(row["score"]),
+                "predicted_points": float(row["score"]),
+                "reason": row["reason"],
+                "photo_url": _photo_url(int(row["code"])),
             }
             for i, row in df.iterrows()
         ],
@@ -116,8 +124,10 @@ def predict_by_position(
                 "position": row["position"],
                 "team": row["team_name"],
                 "price": float(row["price"]),
-                "predicted_points": float(row["predicted_points"]),
-                "photo_url": f"https://resources.premierleague.com/premierleague/photos/players/110x140/p{int(row['code'])}.png",
+                "score": float(row["score"]),
+                "predicted_points": float(row["score"]),
+                "reason": row["reason"],
+                "photo_url": _photo_url(int(row["code"])),
             }
             for i, row in pos_df.iterrows()
         ],
