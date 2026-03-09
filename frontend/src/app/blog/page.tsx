@@ -9,10 +9,14 @@ export const metadata = {
 };
 
 export default function BlogPage() {
-  const blogPath = path.join(process.cwd(), "..", "BLOG_JOURNAL.md");
+  // Try local copy first (copied by build script), then parent dir
+  const localPath = path.join(process.cwd(), "BLOG_JOURNAL.md");
+  const parentPath = path.join(process.cwd(), "..", "BLOG_JOURNAL.md");
   let content = "";
   try {
-    content = fs.readFileSync(blogPath, "utf-8");
+    content = fs.existsSync(localPath)
+      ? fs.readFileSync(localPath, "utf-8")
+      : fs.readFileSync(parentPath, "utf-8");
   } catch {
     content = "# Blog Journal\n\nBlog content not found.";
   }

@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "cp ../BLOG_JOURNAL.md ./BLOG_JOURNAL.md 2>/dev/null; next build",
     "start": "next start"
   },
   "dependencies": {
