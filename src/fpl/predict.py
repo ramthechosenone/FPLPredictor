@@ -607,65 +607,99 @@ def get_feature_columns():
 
 
 def _generate_reason(row: pd.Series) -> str:
-    """Generate a human-readable reason explaining why a player scored high."""
-    reasons = []
+    """Generate a human-readable reason explaining why a player scored high.
 
-    # 1. Recent form spike
+    Written for fans, not data scientists — uses plain language and
+    includes actual numbers so users can judge for themselves.
+    """
+    reasons = []
+    opp_name = row.get("next_opp_name", "")
+
+    # 1. Recent form spike — they had a big GW
     pts_last1 = row.get("pts_last1")
     pts_roll5 = row.get("pts_roll5")
     if pd.notna(pts_last1) and pd.notna(pts_roll5) and pts_roll5 > 0 and pts_last1 >= pts_roll5 * 1.5:
-        reasons.append(f"Scored {pts_last1:.0f} pts last GW, well above his recent average")
+        reasons.append(
+            f"Returned {pts_last1:.0f} pts last gameweek — well above his "
+            f"5-game average of {pts_roll5:.1f}"
+        )
 
-    # 2. Form trend
+    # 2. Form trend — recent form better than longer window
     accel = row.get("pts_accel_3v5")
-    if pd.notna(accel) and accel > 0.5:
-        reasons.append("Form is trending upward")
+    pts_roll3 = row.get("pts_roll3")
+    if pd.notna(accel) and accel > 0.5 and pd.notna(pts_roll3) and pd.notna(pts_roll5):
+        reasons.append(
+            f"Form is picking up — averaging {pts_roll3:.1f} pts over his "
+            f"last 3 games vs {pts_roll5:.1f} over 5"
+        )
 
-    # 3. Fixture difficulty
+    # 3. Fixture — name the opponent
     fdr = row.get("next_fdr")
-    if pd.notna(fdr) and fdr <= 2:
-        reasons.append(f"Favorable fixture ahead (FDR {fdr:.0f})")
-
-    # 4. Home advantage
     is_home = row.get("is_home_next")
-    if pd.notna(is_home) and is_home == 1:
-        reasons.append("Playing at home")
+    if pd.notna(fdr) and opp_name:
+        venue = "at home" if (pd.notna(is_home) and is_home == 1) else "away"
+        if fdr <= 2:
+            reasons.append(f"Faces {opp_name} {venue} — a very favorable fixture")
+        elif fdr == 3:
+            reasons.append(f"Plays {opp_name} {venue} next")
+    elif pd.notna(fdr) and fdr <= 2:
+        reasons.append("Favorable fixture coming up")
 
-    # 5. xG
+    # 4. Home advantage (only if not already covered by fixture reason)
+    if pd.notna(is_home) and is_home == 1 and not any("at home" in r for r in reasons):
+        reasons.append("Has the home-ground advantage this week")
+
+    # 5. xG — explain what it means
     xg = row.get("xg_roll3")
     if pd.notna(xg) and xg > 0.4:
-        reasons.append(f"Strong expected goals ({xg:.2f} xG per game)")
+        reasons.append(
+            f"Creating {xg:.2f} expected goals per game recently — "
+            f"the chances are falling to him"
+        )
 
     # 6. Bonus magnet
     bonus = row.get("bonus_roll3")
     if pd.notna(bonus) and bonus >= 1.5:
-        reasons.append("Earning bonus points regularly")
+        reasons.append(
+            f"Picking up {bonus:.1f} bonus pts per game on average — "
+            f"consistently one of the best players on the pitch"
+        )
 
-    # 7. Value
+    # 7. Value for money
     ppp = row.get("pts_per_price")
-    if pd.notna(ppp) and ppp > 0.8:
-        reasons.append("Excellent value for money")
+    price = row.get("price")
+    if pd.notna(ppp) and ppp > 0.8 and pd.notna(price):
+        reasons.append(
+            f"At £{price:.1f}m, he\'s delivering excellent value "
+            f"relative to his cost"
+        )
 
-    # 8. H2H
+    # 8. H2H track record — name the opponent
     h2h_games = row.get("h2h_games")
     h2h_avg = row.get("h2h_avg_pts")
     if pd.notna(h2h_games) and pd.notna(h2h_avg) and h2h_games >= 3 and h2h_avg > 5:
-        reasons.append("Historically scores well against this opponent")
+        opp_str = f" against {opp_name}" if opp_name else " against this opponent"
+        reasons.append(
+            f"Averages {h2h_avg:.1f} pts across {int(h2h_games)} previous "
+            f"meetings{opp_str}"
+        )
 
-    # 9. Team strength
+    # 9. Team strength mismatch
     tvso = row.get("team_vs_opp")
     if pd.notna(tvso) and tvso > 30:
-        reasons.append("His team is significantly stronger")
-
-    # Pick up to 3, or fallback
-    if not reasons:
-        pts_roll3 = row.get("pts_roll3")
-        if pd.notna(pts_roll3):
-            reasons.append(f"Averaging {pts_roll3:.1f} pts over last 3 games")
+        if opp_name:
+            reasons.append(f"His team is rated significantly stronger than {opp_name}")
         else:
-            reasons.append("Consistent performer based on recent data")
+            reasons.append("His team has a clear quality advantage in this matchup")
 
-    return ". ".join(reasons[:3]) + "."
+    # Pick up to 4, or fallback
+    if not reasons:
+        if pd.notna(pts_roll3):
+            reasons.append(f"Averaging {pts_roll3:.1f} pts over his last 3 games")
+        else:
+            reasons.append("Steady performer based on recent data")
+
+    return ". ".join(reasons[:4]) + "."
 
 
 def predict_next_gw(model=None, metadata=None, data_dir=None):
@@ -692,6 +726,11 @@ def predict_next_gw(model=None, metadata=None, data_dir=None):
     next_gw = _get_next_gw_number(data_dir)
     next_fixtures = _get_next_gw_fixtures(data_dir, next_gw, team_strengths)
 
+    # Build team-id-to-name map for readable reasons
+    with open(data_dir / "bootstrap_static.json") as f:
+        _bs = json.load(f)
+    team_name_map = {t["id"]: t["name"] for t in _bs["teams"]}
+
     # Overwrite opponent strength features with next-GW values
     for idx, row in latest.iterrows():
         team_id = row["team"]
@@ -702,6 +741,7 @@ def predict_next_gw(model=None, metadata=None, data_dir=None):
             latest.at[idx, "next_fdr"] = fix_info["fdr"]
             latest.at[idx, "is_home_next"] = fix_info["is_home"]
             latest.at[idx, "opp_strength_diff"] = fix_info["opp_attack"] - fix_info["opp_defence"]
+            latest.at[idx, "next_opp_name"] = team_name_map.get(fix_info["opp_team"], "")
             # Recalculate team_vs_opp
             own = team_strengths.get(team_id, {})
             league_mean = 1200
